@@ -72,7 +72,7 @@ public class AudioBufferTexture : MonoBehaviour
 
 
 
-        this.GetComponent<SkinnedMeshRenderer>().material.SetTexture("_MainTex", beam);//finally send audio buffer to shader!
+        Shader.SetGlobalTexture("_AudioBuffer", beam);//finally send audio buffer to shader!
 
     }
 }

@@ -6,6 +6,24 @@ OMPU CO PRESENTS: AN OSCILLOSCOPE SHADER PROGRAM: HHHHHHHHHHHHHHHHHHHHHHHH
 1)create a quick system to enable/change interpolation from the main scope script. 
 	1a)Also, make a main scope script instead of using three different scripts hacked together like the sad man i am.
 
+
+
+/////////////////////////
+UPDATE 8/5/18: 
+Implemented a simple bicubic (I think?) interpolation method a couple months ago. 
+
+It's not quite 1 to 1 with the actual scope, but it's better than before. 
+Because of this, I've updated the mesh initializer to produce a much denser mesh.
+
+
+Will have to set up an option for a low-quality mesh & shader setup that uses the old mesh so that it can work better
+on older systems, since obviously there's (3 times) more geometry than before. Currently this shader has been optimized
+a ton, but now only has support for the higher density mesh since it's rescaled for it. Hopefully I'll implement and
+update this repo for that feature sooner than the last update.
+/////////////////////////
+
+
+
 2)implement interpolation filtering to produce less jagged and more authentic beam lines
 	2a)figure out sinc/lanczos filtering and how to implement it in a shader like this
 
@@ -27,22 +45,20 @@ bonus round)how2pronounce lanczos???? (V IMPORTANT!! make studies of this)
 Shader "Oscilloscope" {
 	Properties{
 	_Color("Color", Color) = (0.458823529,0.588235294,0.525490196,1)
-	_MainTex ("Base (RGB)", 2D) = "white" {}
-
+	[Toggle] _OS ("Bicubic Interpolation", float) = 1.0
 }
 
 SubShader {
          Tags {  "IgnoreProjector"="True" "RenderType"="Transparent"}
 
 	LOD 100
-	
-	Pass {  ZWrite Off
-			ZTest Off
 Blend One One
+	
+	Pass { // ZWrite Off
+			//ZTest Off
 		CGPROGRAM
 			#pragma vertex vert
-			#pragma fragment frag alpha
-			#pragma target 2.0
+			#pragma fragment frag 
 			#pragma multi_compile_fog
 			#define TAUR 2.5066282746310002
 			#define NUM_COEF 128
@@ -73,12 +89,12 @@ Blend One One
 
 
 	
-
+	float _OS;
 
 
 
 			
-float4 Tex2Dat(float4 datex) { 
+float Tex2Dat(float4 datex) { 
 	float result = (datex.x + datex.y) - (datex.z + datex.w);
 	//datex.x & datex.y represent positive floats
 	//datex.z & datex.w represent negative floats
@@ -88,12 +104,56 @@ float4 Tex2Dat(float4 datex) {
 
 
 
-
 float4 pointer;//we'll use this to store the position we'll use to read from the audio buffer texture
-sampler2D _MainTex; //and this is the audio buffer texture
+sampler2D _AudioBuffer; //and this is the audio buffer texture
+float4 _AudioBuffer_ST;
+float4 _AudioBuffer_TexelSize;
 fixed4 _Color; //color of the beam
 
+float2 readData(uint id, float4 pointer)
+{
+float4 x1 = tex2Dlod(_AudioBuffer,pointer);
+pointer.y=1;
+float4 y1 = tex2Dlod(_AudioBuffer,pointer);
+float2 r = float2(Tex2Dat(x1),Tex2Dat(y1));
 
+
+return r;
+}
+
+
+float2 Filter(uint id, float4 pointer){
+float tn = id%8;
+pointer.x=(id*_AudioBuffer_TexelSize.x)/8.0;
+float numberOfPoints = 8.0;
+float t = 0;
+//pointer.x=(1+pointer.x-_AudioBuffer_TexelSize.x*_OS)%1.0;
+
+float2 p0 = readData(id,pointer);
+pointer.x=(pointer.x+_AudioBuffer_TexelSize.x*_OS)%1.0;
+
+
+float2 p1 = readData(id,pointer);
+pointer.x=(pointer.x+_AudioBuffer_TexelSize.x*_OS)%1.0;
+
+
+float2 p2 = readData(id,pointer);
+
+      p0 = 0.5 * (p0 
+         + p1);
+		 
+      p2 = 0.5 * (p1 
+         + p2);
+
+	t = tn / (numberOfPoints );
+	float2 position = (1.0 - t) * (1.0 - t) * p0 + 2.0 * (1.0 - t) * t * p1 + t * t * p2;
+
+
+//if(_Time.w%5<2.5)
+return position;
+//else
+//return p1;
+}
 
 
 			v2f vert (appdata_t v, uint id : SV_VertexID, uint inst : SV_InstanceID)
@@ -101,7 +161,7 @@ fixed4 _Color; //color of the beam
 				
 
 
-				float interpol = 1;
+				float interpol = 8;
 				//above is the interpolation multiplier. this might be useful once i can figure out useful interpolation/filtering
 				//but if interpolation is not being use, it should be set to 1. If you'd like to use interpolation to experiment
 				//make sure to multiply the for loop number for the Z axis in InitializeMesh.cs. I'll see if I can add a public variable
@@ -112,49 +172,48 @@ fixed4 _Color; //color of the beam
 
 
 
-				float sex = v.vertex.z;
-				sex = id;
 				v2f o;
 
 				float why = float(id);
 				v.vertex.z=id;
 				o.texcoord.y=v.vertex.z;
-
+				//id*=step(3,id%4);
 
 				pointer.x = fmod(((id)/(8192 * interpol)),1);
 				pointer.y = 0; //switch to X set on horizontal line 0
-			float4 X = tex2Dlod(_MainTex, pointer);//grab current X value from texture at coordinate
+			float4 X = tex2Dlod(_AudioBuffer, pointer);//grab current X value from texture at coordinate
 
 
 
 			pointer.x = fmod(((id -interpol) / (8192 * interpol)), 1);//-interpol gets previous coord
-			float4 preX = tex2Dlod(_MainTex, pointer);//get previous position value for comparison later
+			float4 preX = tex2Dlod(_AudioBuffer, pointer);//get previous position value for comparison later
 			
 			pointer.x = fmod(((id + interpol) / (8192 * interpol)), 1);//+interpol gets next coord
-			float4 postX = tex2Dlod(_MainTex, pointer);//get next position value for comparison later
+			float4 postX = tex2Dlod(_AudioBuffer, pointer);//get next position value for comparison later
 
 			//X axis transform with the obtained current X position
-						v.vertex.x += Tex2Dat(X);
+			//			v.vertex.x += Tex2Dat(X);
 
 
 
 
-						pointer.y = 1; //switch to Y set on horizontal line 1
+			//			pointer.y = 1; //switch to Y set on horizontal line 1
 						pointer.x = fmod(((id) / (8192 * interpol)), 1);
-			float4 Y = tex2Dlod(_MainTex, pointer); //grab current Y value from texture at coordinate
+			float4 Y = tex2Dlod(_AudioBuffer, pointer); //grab current Y value from texture at coordinate
 
 			pointer.x = fmod(((id - interpol) / (8192 * interpol)), 1);//-interpol gets previous coord
-			float4 preY = tex2Dlod(_MainTex, pointer); //get previous position value for comparison later
+			float4 preY = tex2Dlod(_AudioBuffer, pointer); //get previous position value for comparison later
 			
 			pointer.x = fmod(((id + interpol) / (8192 * interpol)), 1);//+interpol gets next coord
-			float4 postY = tex2Dlod(_MainTex, pointer);//get next position value for comparison later
+			float4 postY = tex2Dlod(_AudioBuffer, pointer);//get next position value for comparison later
 
 
 
 			//Y axis transform
-			v.vertex.y += Tex2Dat(Y);
+			//v.vertex.y += Tex2Dat(Y);
+			
 
-
+			v.vertex.xy=Filter(id,pointer);
 			
 			float px = Tex2Dat(preX);
 			float py = Tex2Dat(preY);
@@ -214,13 +273,17 @@ fixed4 _Color; //color of the beam
 			END OF SAD ATTEMPT*/
 
 
-
-
-
-
+			float t=_Time.w*100;
 
 			
+			//v.vertex.xy+=float2(cos(float(id+t)/interpol/4),sin(float(id+t)/interpol/4))/50;
+			
+			//if(id%4<3)
+			//v.vertex.xy=float2(cos(float(id+t)/interpol/4),sin(float(id+t)/interpol/4))/50;
+			
+			
 			v.vertex.xy *= float2(4, 4);//just helps to make it a little bigger since the initial values aren't too huge
+			v.vertex.z-=32768;//center the mesh offset on the Z axis by subtracting half the vertex count (each vert already moves forward one unit)
 			
 
 			
@@ -259,8 +322,21 @@ fixed4 _Color; //color of the beam
 			col = float4((fod), (fod), 1, 1);// fmod(i.texcoord.y,.5)*10;
 			*/
 
+			col=.61;
+			
+			/*
+			col.r=.5+sin((i.texcoord.y%8))/2;//step(6,i.texcoord.y%8);
+			col.g=.5+cos((i.texcoord.y%8))/2;//1-step(4,i.texcoord.y%8);
+			col.b=.5+cos((-i.texcoord.y%8))/2;//1-step(2,i.texcoord.y%8);
 
+			col.r=step(6,i.texcoord.y%8);
+			col.g=1-step(4,i.texcoord.y%8);
+			col.b=1-step(2,i.texcoord.y%8);
+			*/
 
+			col=col/2+.5;
+
+			col=_Color*(pow(i.texcoord.y/65536,1.05));
 				UNITY_APPLY_FOG(i.fogCoord, col);
 
 				return col;
